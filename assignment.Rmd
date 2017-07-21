@@ -1,0 +1,123 @@
+
+---
+title: "Machine Learning Assignment"
+author: "Adry Lu"
+date: "July 19, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+ There are five different classifications: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell
+only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise,while the other 4 classes correspond to common mistakes. 
+
+
+## Import and cleanining data
+
+A dataset with 19622 observations and 160 was available to fit a classification model. There are several empty ("NA") variables in the dataset, so they were removed. The index, user_name, timestamp and window variables were eliminated from the dataset. The resulting dataset has 19622 observations and 53 variables. The dataset was divided into a training (75%) and a validation set (25%), in order to assess the the out of sample error and select the final model.
+
+```{r,include=FALSE}
+library(plyr)
+library(dplyr)
+library(caret)
+library(parallel)
+library(doParallel)
+library(tidyr)
+```
+
+```{r,cache=TRUE,warning=FALSE}
+
+dataset<-read.csv("pml-training.csv",as.is=TRUE,strip.white=TRUE,
+                   na.strings=c("NA","NaN",""," ","  "))
+t1<-sapply(dataset,is.na)
+t2<-apply(t1,2,sum)
+subset<-t2==0
+tdata<-dataset[,subset]
+rm(t1,t2)
+tdata<-mutate(tdata,new_window=as.factor(new_window),user_name=as.factor(user_name),classe=as.factor(classe))
+tdata<-tdata[,-c(1:7)]
+
+set.seed(1345)
+inTrain <- createDataPartition(y=tdata$classe,p=0.75, list=FALSE)
+#subset data to training
+training <- tdata[inTrain,]
+# subset the rest of the data for model validation
+validation <- tdata[-inTrain,]
+```
+
+# Model Selection
+
+Different *Tree-based models* were train on the training data. The models included are: tree-based models (rpart), bagged models (treebag), and random forest (rf). The `trainControl` function in the `caret` package was used to control the re-sampling method for the modelgeneration, *10-fold Cross-Validation* was used.  
+The models were then used to predict the *classe* in the validation data set, and the accuracy in the training and validation set for the three models was compared.
+
+```{r,cache=TRUE,warning=FALSE}
+
+cluster <- makeCluster(detectCores() - 1) 
+registerDoParallel(cluster)
+
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel = TRUE)
+
+set.seed(2356)
+mdl1<-train(classe~.,data=training,method="rpart",trControl=fitControl)
+mdl2<-train(classe~.,data=training,method="treebag",trControl=fitControl)
+mdl3<-train(classe~.,data=training,method="rf",trControl=fitControl)
+
+stopCluster(cluster)
+registerDoSEQ()
+
+mdlaccuracy<-data.frame(model=c("Tree","Bagged CART","Random Forest"),train.accuracy=c(mdl1$results$Accuracy[1],mdl2$results$Accuracy[1],mdl3$results$Accuracy[1]))
+
+cmt1<-confusionMatrix(predict(mdl1,newdata = validation),validation$classe)
+cmt2<-confusionMatrix(predict(mdl2,newdata = validation),validation$classe)
+cmt3<-confusionMatrix(predict(mdl3,newdata = validation),validation$classe)
+
+mdlaccuracy<-data.frame(mdlaccuracy,validation.accuracy=c(cmt1$overall[1],cmt2$overall[1],cmt3$overall[1]))
+
+print(mdlaccuracy)
+```
+
+The model with the highest accuracy (**Random Forest**) in the validation set was chosen.
+The normalised confusion matrix for the random forest model is shown below. 
+
+```{r,warning=FALSE}
+
+ctable<-cmt3$table
+ctable<-ctable/colSums(ctable)[col(ctable)]
+confusion<-as.data.frame(ctable)
+
+ggplot(data =  confusion, mapping = aes(x = Reference, y =Prediction )) +
+     geom_tile(aes(fill = log10(Freq)), colour = "white") +
+     geom_text(aes(label = sprintf("%1.2e", Freq)), vjust = 1) +
+     scale_fill_distiller(palette = "YlGn",direction =1,na.value="white")  +
+     theme(legend.position = "none")
+
+```
+
+The importance of the predictors in the model is shown in the figure below
+
+```{r,warning=FALSE}
+var3<-varImp(mdl3)
+plot(var3,top=20)
+```
+
+# Test Data
+The final model was used to predict the *classe* in the testing dataset for the Quizz portion of the assignment
+
+```{r,warning=FALSE}
+dataset2<-read.csv("pml-testing.csv",as.is=TRUE,strip.white=TRUE,
+                   na.strings=c("NA","NaN",""," ","  "))
+t1<-sapply(dataset,is.na)
+t2<-apply(t1,2,sum)
+subset<-t2==0
+testdata<-dataset2[,subset]
+rm(t1,t2)
+testing<-mutate(testdata,new_window=as.factor(new_window),user_name=as.factor(user_name))
+testing<-testing[,-c(1:7)]
+predict(mdl3,newdata=testing)
